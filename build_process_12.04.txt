@@ -1,0 +1,412 @@
+# The build process notes from BL6 were a mess.  When I made BL7 they became an
+# unholy mess.  I've tried to prune them back to the essentials, but may have broken
+# them in the process.  But then they were likely broken anyway.  Use your inititative.
+
+# Ideally the build process would be one neat script and all bits would be in
+# .deb pakages, but no you have to add things incrementally.
+
+# Install Ubuntu 12.04 on the build machine and add some packages:
+
+sudo apt-get install squashfs-tools xz-lzma graphicsmagick rsync
+
+# Also you need the various scripts and bl7bits to hand, so untar them.
+
+# Get the ISO, and unpack it all
+
+wget -c --content-disposition 'http://www.ubuntu.com/start-download?distro=desktop&bits=64&release=lts'
+ 
+mkdir reconstructor_bl7 && cd !#1
+mkdir initrd remaster root scrips original_cd_image
+ 
+sudo mkdir /media/cdrom1
+sudo mount -t auto -o loop ~/ubuntu-12.04.1-desktop-amd64.iso /media/cdrom
+ 
+rsync -av /media/cdrom1/ ./remaster/
+chmod -R u+w remaster
+ 
+rsync -av /media/cdrom1/ ./original_cd_image/
+chmod -R a-w original_cd_image
+ 
+# The initrd is now packed with lz, not gz, so we need:
+cd ./initrd
+sudo bash -c "lzcat -Slz ../remaster/casper/initrd.lz | cpio -i"
+ 
+# And the squashfs
+cd ../root
+mkdir ../squashmount
+sudo mount -t squashfs -o loop,ro ../remaster/casper/filesystem.squashfs ../squashmount/
+sudo rsync -av ../squashmount/ .
+sudo umount ../squashmount
+rmdir ../squashmount
+
+# Add the symlink:
+cd ~ ; ln -s reconstructor_bl7 reconstructor
+ 
+# Before we can recon, we need biolinuxfirstboot
+
+sudo cp ~/bl7bits/biolinuxfirstboot /home/manager/reconstructor/root/etc/init.d/biolinuxfirstboot
+for rc in 1 2 ; sudo ln -s ../init.d/biolinuxfirstboot /home/manager/reconstructor/root/etc/rc${rc}.d/S99biolinuxfirstboot
+
+# Change boot menu
+
+for f in ~/reconstructor/remaster/isolinux/*.cfg ; sed -i 's/Ubuntu/Bio-Linux 7/' $f
+
+* Also: Edited f1.txt and txt.cfg, but probably didn't need to.
+
+# Fudge .disk/info
+grep -q '^Bio-Linux' remaster/.disk/info || sed -i 's/^/Bio-Linux 7 based on /' remaster/.disk/info
+ 
+ 
+# Add root .profile (note this affects the umask in the chroot as well as the actual system using sudo -i)
+# Root .bashrc tweaked to have red prompt.
+sudo cp ~/bl7bits/root_profile root/root/.profile
+sudo cp ~/bl7bits/root_bashrc root/root/.bashrc
+
+# Done.  Now into the chroot (openchroot)
+
+# Remove Ubuntu One
+apt-get remove --purge `apt-cache search ubuntuone | awk '{print $1}'`
+
+* edit root/etc/casper.conf and initrd/etc/casper.conf
+>> # This file should go in /etc/casper.conf
+>> # Supported variables are:
+>> # USERNAME, USERFULLNAME, HOST, BUILD_SYSTEM
+>> 
+>> export USERNAME="live"
+>> export USERFULLNAME="Live session user"
+>> export HOST="biolinux"
+>> export BUILD_SYSTEM="Ubuntu"
+>> END
+
+# Ramblings on setting the keyboard to be GB by default.
+
+In /usr/lib/ubiquity/ubiquity/misc.py is the thing that kicks in if you change the language in the original greeter.
+It has a hard-coded list, but I suspect this never gets activated.  Wrong!  It does.  And in fact if I run (on live boot):
+
+ubiquity -g --only
+
+It resets the libgnomekbg indicator.  Right - I think we may be close to nailing this!!
+In fact, if I boot vanilla Ubuntu, select the GB keyboard, and run ubiquity as above it puts the
+US keyboard back.  So there is no clever system - it's an orrible ack. So time to hack back.
+
+My solution - in misc.py, if us is keyboard 1 and gb is 3, swap them around.
+This will be overwritten if Ubiquity updates, but I'm not sure what to do about that.
+Just leaving the file with the edit in for now.  I've made it so the recon script checks
+if the edit is still in place.
+
+See fux_misc_py.patch.  Remember to re-patch if Ubiquity is updated.
+ 
+# Now, as a test, set up custom repos and install one Bio-Linux package into the image.
+# Note three different ways to add three repositories plus signing keys
+openchroot
+add-apt-repository ppa:nebc/bio-linux
+echo "deb http://nebc.nerc.ac.uk/bio-linux/ unstable bio-linux" >> /etc/apt/sources.list.d/bio-linux.list
+echo "deb http://www.stats.bris.ac.uk/R/bin/linux/ubuntu lucid/" >> /etc/apt/sources.list.d/cran-precise.list
+apt-get update
+apt-get install bio-linux-keyring
+add-apt-repository ppa:freenx-team/ppa
+add-apt-repository ppa:freenx-team/testing
+** Also enable the universe packages in /etc/apt/sources.list
+apt-get update
+apt-get install bio-linux-emboss
+
+
+* Note bio-linux-keyring now has the CRAN key in it.
+apt-get install vim-gnome # to save my sanity.
+ 
+# PostgreSQL stuffs
+apt-get install postgresql
+pg_dropcluster --stop 9.1 main
+pg_lsclusters | tail -n+2 | awk '{print "pg_dropcluster --stop "$1" "$2}' | sh
+ 
+# MySQL
+ln -s /bin/true /usr/local/sbin/invoke-rc.d
+apt-get install mysql-server
+rm /usr/local/sbin/invoke-rc.d
+vi /etc/mysql/my.cnf
+rm -rf /var/lib/mysql/
+ 
+# Outside the chroot do:
+sudo iptables -L
+# Then:
+apt-get install gufw
+sed -i 's/ENABLED=no/ENABLED=yes/' etc/ufw/ufw.conf
+ufw default deny incoming
+ufw allow 22
+ufw  allow from 127.0.0.0/24 to any port 3306
+ufw  allow from 127.0.0.0/24 to any port 5432
+
+* It warns me of perms on / which I fixed.
+# The commands produce warnings but seem to stick nonetheless.
+ 
+# openssh-server
+>> apt-get install openssh-server
+# disable root logins in /etc/ssh/sshd_config
+>> PermitRootLogin no
+>> 
+>> # allow members of SSH group to login (/etc/ssh/sshd_config)
+>> AllowGroups ssh
+ 
+# installed logcheck
+apt-get install logcheck mutt
+
+* This pulled in postfix.  Install exim4 instead.
+Then "dpkg -P postfix"
+ 
+* set SENDMAILTO="logcheck" and REPORTLEVEL="workstation" in /etc/logcheck/logcheck.conf
+# these will be diverted to the primary user by biolinuxfirstboot
+sed -i -e 's/^REPORTLEVEL=".*"/REPORTLEVELEL="workstation"/' -e 's/^SENDMAILTO=".*"/SENDMAILTO="logcheck"/' /etc/logcheck/logcheck.conf
+
+# Ok, also set FQDN to 0.
+
+# And fix the wallpaper and boot screen etc.
+# Yes I really am copying a jpg file over a png.  What a warty wart.
+apt-get install bio-linux-themes-v7
+cp /usr/share/backgrounds/*BL_Logo.jpg /usr/share/backgrounds/warty-final-ubuntu.png
+
+# Here is where I want to install packages from my list.  
+# (But first a reboot of the host machine and a test ISO needs to be burned.  Hoepfully it works.)
+
+
+# OK, time to install all the BL stuff so I have a Bio-Linux stick to show for my efforts,
+# never mind the slowdown for testing
+apt-get install runurl
+activate universe and multiverse in /etc/apt/sources.list
+runurl  http://nebc.nerc.ac.uk/downloads/bl7_only/bl_master_package_list.sh
+
+# Cleanups
+# Remove example-content
+apt-get remove --purge example-content
+
+# Remove kernel header stuff
+apt-get remove --purge linux-headers-generic
+
+# This should be done by the script?
+apt-get install freenx
+usermod -aG ssh nx
+apt-get install vim-gnome
+
+#Set zsh as default shell and default groups (eg. ssh and arb)
+vi /etc/adduser.conf
+
+* Ensure that ssh and arb are in extra-groups in adduser.conf.  Apparently
+all users go into these and an administrator just gains "sudo" on top.
+Also you need to explicitly set ADD_EXTRA_GROUPS=1
+
+# This still needs looking at.  Waht runs on the DVD/USB that shouldn't?
+>> #Disable some services on live DVD - copy ~/reconstructor_bl5/initrd/scripts/casper-bottom/31disable_biolinux_init
+>> #then
+>> sudo cp ~/blbits/31disable_biolinux_init initrd/scripts/casper-bottom
+>> ( cd initrd ; for f in scripts/casper-bottom/[0-9]* ; do echo -e "/$f\n[ -e /conf/param.conf ] && . /conf/param.conf" ; done ) \
+>>     | sudo tee initrd/scripts/casper-bottom/ORDER
+>> 
+>> # Note the above script also handles bl-autorun
+>> 
+
+# Firefox prefs are sorted by the themes package
+ 
+# R packages need looking at!
+>>       * Open a terminal window and type the following two commands:
+>>               * sudo apt-get install libglu1-mesa-dev libpng12-dev
+>>               * sudo R
+>>       * At the R command prompt type:
+>>               * source("http://bioconductor.org/biocLite.R")
+>>               * update.packages(repos=biocinstallRepos(), ask=FALSE)
+>>       * This update may take some time.
+>>       * Finally there are two further R programs you may wish to install
+>>         by using the following R commands:
+>>               * biocLite("ShortRead")
+>>               * biocLite("Rolexa")
+>> 
+>> # Nope, there is a load more R stuff to go on.  You need to do 'biocLite()' and get all of them, plus there
+>> # are some non-bioconductor ones to grab.  See http://nebc.nerc.ac.uk/tools/bioinformatics-docs/other-bioinf/r-and-bioconductor/
+
+# TODO - motd belongs in themes if we change it at all? 
+>> cd root && sudo tar -xvf ~/blbits/motd.d.tar
+ 
+>> # Can I stop the default directories appearing in Gnome?
+>> # Yes, by removing xdg-user-dirs, but this might have other impacts.
+>> 
+>> # Right, more fixes:
+>> 
+
+sudo tee root/etc/skel/.zshrc <<END
+#Add custom zsh initialisation here
+#System-wide settings can go into /etc/zsh/zshrc.d/customrc.zsh
+ 
+#These lines enable automatic screen sessions for SSH logins.
+#See http://nebc.nerc.ac.uk/tools/bio-linux/other-bl-docs/using-screen
+#
+# if [[ -n "${SSH_TTY}" ]] && [[ -z "${STY}" ]]; then
+#  screen -xRR
+# fi
+END
+sudo chmod go-rx root/etc/skel/.*
+
+Done for BL7 - but why the hell isn't it in the b-l-zsh package??
+
+After this is stuff I still need to review and maybe add to BL7...
+ 
+>> # Initial user not being added to ssh group
+>> # Prospective fix (in chroot):
+>> echo "SET passwd/user-default-groups "`debconf-get passwd/user-default-groups 2>&1`" ssh"
+>> echo '<THE RESULT>' | debconf-communicate
+>> 
+>> # Fudge Grub settings (do this in chroot too)
+>> perl -pi -e 's/^(if \[ "x\$\{GRUB_DISTRIBUTOR\}" = "x" \] ; then)/if \[ -e \/etc\/bio-linux.version \] ; then\n  OS=Bio-Linux\nel$1/' /etc/grub.d/10_linux
+>> #Also edit /etc/default/grub to show how SAVEDEFAULT could be activated
+>> 
+>> # Install gnumeric
+>> apt-get install gnumeric
+>> 
+>> # Install NXClient
+>> cd /tmp
+>> wget  http://64.34.161.181/download/3.4.0/Linux/nxclient_3.4.0-7_x86_64.deb
+>> dpkg -i nxclient*.deb
+>> chmod 755 /usr/lib/cups/backend/ipp
+>> 
+>> # Note this should result in the link /etc/xdg/menus/applications-merged/nxclient.menu
+>> # and thus NXClient appearing under Applications->Internet
+>> 
+>> # Bela noted that she'd expect an icon for the pdf reader, and so would I
+>> sudo cp ~/blbits/evince_alias.desktop root/usr/share/applications
+>> # Also:
+>> ( echo "#The default PDF reader is called Evince"
+>>   echo "#and I can never remember that."
+>>   echo "alias pdfreader=evince"
+>>   echo "#and also this..."
+>>   echo "alias rebooth='sudo reboot'"
+>> ) | sudo tee root/etc/zsh/zshrc.d/02_handy_aliases.zsh
+>> 
+>> # Change preferences for APT cache and unattended upgrades
+>> sudo tee root/etc/apt/apt.conf.d/10periodic <<END
+>> APT::Periodic::Update-Package-Lists "1";
+>> APT::Periodic::Download-Upgradeable-Packages "1";
+>> APT::Periodic::AutocleanInterval "7";
+>> APT::Periodic::Unattended-Upgrade "1";
+>> END
+>> 
+>> sudo sed -i '/::Allowed-Origins/{p;s/.*/\t"bio-linux standard";/}' root/etc/apt/apt.conf.d/50unattended-upgrades
+>> 
+>> sudo tee root/etc/cron-apt/action.d/4-upgrade <<END
+>> echo "upgrade -y -o APT::Get::Show-Upgraded=true"
+>> END
+>> 
+>> # The Ubuntu logo in the GDM greeter - what can we do about that?
+>> # Well, the greeter layout can be edited by modifying
+>> #  /usr/share/gdm/gdm-greeter-login-window.ui
+>> # Or you can just fudge the icon found here
+>> #  /usr/share/icons/LoginIcons/apps/64/computer.svg
+>> 
+>> # Now what I could to do is find where the theme gets set to 'LoginIcons' and modify this to make the
+>> # window black too, then plonk in our Bio-Linux logo.
+>> #   See /var/lib/gdm/.gconf.defaults/%gconf-tree.xml
+>> 
+>> sudo cp ~/blbits/nebc_nerc_gdmlogo.png root/usr/share/gdm
+>> echo 'dpkg-divert --rename /usr/share/gdm/gdm-greeter-login-window.ui' | openchroot
+>> 
+>> # The hostname auric is getting into the Exim4 configuration.  Remove it (in chroot)
+>> rm /etc/mailname
+>> sed -i '/^dc_other_hostnames=/d' /etc/exim4/update-exim4.conf.conf
+>> echo "RESET exim4/dc_other_hostnames" | sudo debconf-communicate
+>> echo "RESET exim4/mailname" | sudo debconf-communicate
+>> 
+>> # For the above to work properly, exim needs to be reconfigured in firstboot
+>> 
+>> # Also deleted the SSH keys from /etc/ssh.  Do these get regenerated on installation or
+>> # do I need to force the issue with dpkg-reconfigure -pcritical openssh-server?
+>> rm /etc/ssh/*key*
+>> # I've forced it in any case, just for now.
+>> 
+>> # EBI search plugin for Firefox
+>> # I got http://releases.mozilla.org/pub/mozilla.org/addons/151899/ebi_eb-eye-20100422.xml and installed it, then
+>> # snagged the resulting eb-eye.xml
+>> sudo cp ~/blbits/eb-eye.xml root/usr/lib/firefox-addons/searchplugins/en-US
+>> sudo cp ~/blbits/eb-eye.xml root/usr/lib/firefox-addons/searchplugins/en-GB
+>> sudo cp ~/blbits/pubmed.xml root/usr/lib/firefox-addons/searchplugins/en-US
+>> sudo cp ~/blbits/pubmed.xml root/usr/lib/firefox-addons/searchplugins/en-GB
+>> 
+>> 
+>> # Documentation - 
+>> # PREVIOUS INSTRUCTIONS:
+>> #Get the latest intro course PDF, README and bioinf_files.tar.gz
+>> #Get the latest bl5_user_guide.html
+>> #Put them into /usr/local/bioinf/documentation/bio-linux and ensure that the desktop links point to them correctly (you should freshen
+>> #the tarball under blbits if these are edited)
+>> 
+>> # Add 2 packages suggested by JJ on the -dev list
+>> apt-get install libclass-inspector-perl libfile-slurp-perl libfile-which-perl
+>> 
+>> # Due to Ubuntu bug 546578 install updated gnome-screensaver as workaround
+>> # shouldn't need this if a proper fix appears
+>> dpkg -i /tmp/gnome-screensaver_2.30.0-0ubuntu2_amd64.deb
+>> 
+>> # Due to vanishing zshrc.distrib I had to
+>> apt-get install --reinstall zsh
+>> 
+>> # Fix for slow-responding USB sticks (possibly)
+>> echo "options scsi_mod inq_timeout=15" | sudo tee initrd/etc/modprobe.d/options
+>> 
+>> # And remember to apt-get autoclean and to purge any removed packages when done.
+
+dpkg -l | grep -v '^ii'
+
+And remove apport, as it does silly things.
+
+apt-get remove --purge apport
+
+>> 
+>> .fin
+>> 
+>> ### Refresh for 6.0.24, 1st Dec 2010
+>> 
+>> There have been a lot of updated packages.  Doing a major upgrade risks creating an unbootable system, but
+>> nevertheless I did upgrade everything apart from grub, plymouth and the kernel.  Therefore I hope I can
+>> get away with using the existing initrd.
+>> 
+>> Updated all BL packages and installed some new ones (not qiime).
+>> 
+>> Pulled t-coffee and velvet from https://edge.launchpad.net/~tbooth/+archive/ppa1 but are they ready to go straight on?
+>> Yes, done.
+>> 
+>> (Note that auric needs rebooting)
+>> 
+>> R stuff:
+>> 
+>> apt-get install libxml2-dev libcurl-gnutls-dev
+>> R > update.packages()
+>> apt-get remove  libxml2-dev libcurl-gnutls-dev
+>> apt-get autoclean
+>> R > source("http://bioconductor.org/biocLite.R")
+>> R > update.packages(repos=biocinstallRepos(), ask=FALSE)
+>> 
+>> Now the stuff from my diary (28th Oct)
+>> 
+>>     CGI scripts and PHP (eg. phpPGAdmin) should work out of the box.
+>>     a2enmod CGI - already done.  Need to investigate this and come back.
+>>     ...
+>> 	Tested that phpPgAdmin works OK after APT installation and Apache full restart.
+>> 	The user guide says that user's public_html should work by default so I did
+>> 	'a2enmod userdir'.
+>> 
+>>     removed "echo" from /etc/cron-apt/action.d/4-upgrade - Not sure what effect this will have?
+>> 
+>>     R was done already.
+>> 
+>>     bio-linux-themes reinstated instead of themes-v5
+>> 
+>>     T-coffee installed (see above)
+>> 
+>>     icedtea6-plugin already on
+>> 
+>>     decided to stick with IM over GM, as that's the Ubuntu default
+>> 
+>>     cytoscape unchanged, prot4est package was updated already
+>> 
+>> Now the stuff from the on-line TODO list/wishlist.
+>> 
+>>     added /usr/NX/bin to path by editing bio-linux-zsh
+>> 
+>>     added xclip by default
+>> 
+>> Everything else is old or to-be-decided, by the look of it.  Build the image!

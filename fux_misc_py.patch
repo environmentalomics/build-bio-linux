@@ -1,0 +1,57 @@
+--- misc.py.orig	2014-07-21 18:26:11.000000000 +0100
++++ misc.py	2014-07-23 15:15:35.000000000 +0100
+@@ -752,6 +752,12 @@
+         # gsettings doesn't understand utf8
+         new_variants = [str(variant) for variant in new_variants]
+ 
++        #Hack pt1 added for Bio-Linux to prefer gb keyboard over us
++        if new_variants[0] == "us" and new_variants[2] == "gb" :
++            new_variants[0] = str("gb")
++            new_variants[2] = str("us")
++        #end hack
++
+         return new_variants
+ 
+     def call_setxkbmap(variants):
+@@ -771,6 +777,41 @@
+             "setxkbmap", "-layout", ",".join(kb_layouts),
+             "-variant", ",".join(kb_variants))
+ 
++        #Hack pt2 added for Bio-Linux to actually make the keyboard settings stick
++        #in 14.04.
++        #It seems the upstream authors have attempted to get this fixed, but missed
++        #the point that we need to preserve the DBUS address variable, which is lost
++        #when Ubiquity gains root privileges.
++        # os.environ['DBUS_SESSION_BUS_ADDRESS'] = "unix:abstract=/tmp/dbus-FaqRsE1MGY"
++        #I tried signalling the keyboard indicator with "pkill -USR1", but that just
++        #locks up the whole system.  Meh, so frickin fragile.  Hence this appalling
++        #kludge instead.
++        user = os.environ.get('PKEXEC_UID')
++        user = '#' + user if user else '#999'
++
++        try:
++            if not os.environ.get('DBUS_SESSION_BUS_ADDRESS') :
++                proc1 = subprocess.Popen('ps -p %i -o ppid=' % os.getppid(), shell=True, 
++                                         stdout=subprocess.PIPE, )
++                pppid = int(proc1.communicate()[0].rstrip())
++                proc2 = subprocess.Popen('sudo -u "%s" cat /proc/%i/environ' % (user, pppid), 
++                                         shell=True, stdout=subprocess.PIPE, )
++                os.environ['DBUS_SESSION_BUS_ADDRESS'] = [ 
++                       x for x in proc2.communicate()[0].decode().split('\0') 
++                       if x.startswith("DBUS_SESSION_BUS_ADDRESS=") 
++                       ][0][25:]
++        except:
++            os.environ['DBUS_SESSION_BUS_ADDRESS'] = 'none'
++
++        subprocess.call(
++          ['sudo', '-E', '-u', user, 'gsettings', 'set',
++           "org.gnome.desktop.input-sources", "sources",
++           repr( [('xkb', l+'+'+v if v else l) for l,v in zip(kb_layouts, kb_variants)] )
++          ],
++        preexec_fn=drop_all_privileges )
++        #subprocess.call(['sudo', '-u', user, 'pkill', '-USR1', 'indicator-keybo'])
++        #end hack 
++
+     iso_639 = ElementTree.parse('/usr/share/xml/iso-codes/iso_639.xml')
+     nodes = [element for element in iso_639.findall('iso_639_entry')
+              if element.get('iso_639_1_code') == lang]
