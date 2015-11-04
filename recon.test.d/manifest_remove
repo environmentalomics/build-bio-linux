@@ -1,0 +1,32 @@
+#!/bin/sh
+set -u
+set -e
+
+# bio-linux-fixups should not persist on an installed system, so
+# allow it to be removed
+if [ -z "${ROOT:-}" ] ; then
+    echo '!'" \$ROOT is not set.  Can't continue"
+    false
+fi
+filetofix="$ROOT"/remaster/casper/filesystem.manifest-remove
+
+echo
+echo "Adding packages to filesystem.manifest-remove"
+
+#Just one, but there could be more
+pkgs="bio-linux-fixups"
+
+if [ ! -e "$filetofix" ] ; then
+    echo '!'" $filetofix not found.  Can't continue."
+    false
+fi
+
+for f in $pkgs ; do
+    if grep -Fxq $f "$filetofix" ; then
+	true
+    else
+	echo "~ Adding $f"
+	( cat "$filetofix" ; echo $f ) | sort > "$filetofix~"
+	mv "$filetofix~" "$filetofix"
+    fi
+done

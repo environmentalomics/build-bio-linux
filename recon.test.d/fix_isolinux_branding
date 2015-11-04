@@ -1,0 +1,30 @@
+#!/bin/sh
+set -u
+set -e
+
+# Check that $ROOT/remaster/{isolinux/*.cfg boot/grub/*.cfg} say Bio-Linux 8
+# and not Ubuntu.
+
+#VERSION should be exported by recon
+BLVERS="`echo "$VERSION" | cut -d. -f1`"
+[ -z "$BLVERS" ] && BLVERS=8
+
+echo
+echo "Verifying bootup branding in isolinux/ and boot/grub/"
+
+if [ -z "${ROOT:-}" ] ; then
+    echo '!'" \$ROOT is not set.  Can't continue"
+    exit 1
+fi
+
+cd "${ROOT}/remaster"
+tofix="`grep Ubuntu isolinux/*.cfg boot/grub/*.cfg isolinux/f1.txt | wc -l`"
+if [ "$tofix" = 0 ] ; then
+    echo ". Looks good"
+    exit 0
+fi
+
+for f in isolinux/*.cfg boot/grub/*.cfg isolinux/f1.txt ; do 
+    sed -i 's/Ubuntu\( [0-9.]\{5\}\)\?/Bio-Linux '"$BLVERS/" "$f"
+done
+echo "~ Fixed $tofix lines."

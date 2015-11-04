@@ -1,0 +1,15 @@
+#!/bin/sh
+set -u
+set -e
+
+echo
+echo "Removing .save files from /etc/apt/sources.list[.d]"
+
+if [ -z "${ROOT:-}" ] ; then
+    echo '!'" \$ROOT is not set.  Can't continue"
+    exit 1
+fi
+
+sudo rm -f /root/etc/apt/sources.list.d/*.save \
+	   /root/etc/apt/sources.list.save
+

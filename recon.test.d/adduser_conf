@@ -1,0 +1,31 @@
+#!/bin/sh
+set -u
+set -e
+
+echo
+echo "Ensuring that /etc/adduser.conf is customised"
+
+if [ -z "${ROOT:-}" ] ; then
+    echo "! \$ROOT is not set.  Can't continue"
+    exit 1
+fi
+
+#Script based on casper_conf
+cf="$ROOT"/root/etc/adduser.conf
+
+if ! grep -q '^DSHELL=/bin/zsh' "$cf" ; then
+    echo "~ Fixing DSHELL"
+    sudo sed -i 's,^\(DSHELL\)=.*,\1=/bin/zsh,' "$cf"
+fi
+
+if ! grep -q '^EXTRA_GROUPS=".* ssh.*"' "$cf" ; then
+    echo "~ Fixing EXTRA_GROUPS"
+    sudo sed -i 's/^[# ]*\(EXTRA_GROUPS="[^"]*\)"/\1 ssh arb"/' "$cf"
+fi
+
+if ! grep -q '^ADD_EXTRA_GROUPS=1' "$cf" ; then
+    echo "~ Fixing ADD_EXTRA_GROUPS"
+    sudo sed -i 's/^[ #]*\(ADD_EXTRA_GROUPS\)=.*/\1=1/' "$cf"
+fi
+
+true

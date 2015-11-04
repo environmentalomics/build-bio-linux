@@ -1,0 +1,71 @@
+#!/bin/bash
+#Define the users home directory and the default build path 
+ROOTHOME=/home/manager
+WORKING=$ROOTHOME/reconstructor
+#Canonicalise
+WORKING="`( cd \"$WORKING\" ; pwd -P )`"
+
+#Provide a working directory on the command-line
+#NOTE: no sanity checking here
+if [ $# == 1 ]; then
+    WORKING=$ROOTHOME/build-bio-linux/$1;
+fi
+
+echo "Setting up chroot in $WORKING"
+cd $WORKING
+
+#Set up the essentials for a working chroot
+sudo cp -b /etc/resolv.conf root/etc/resolv.conf
+sudo mount --bind /proc root/proc
+sudo mount -t sysfs none root/sys
+sudo mount --bind /dev/pts root/dev/pts
+
+#A couple of redirects to stop services starting when a package
+#is installed
+sudo chroot root ln -s /bin/true /usr/local/sbin/invoke-rc.d
+sudo chroot root ln -s /bin/true /usr/local/sbin/update-grub
+
+# Allow X apps to work
+sudo xauth -f root/root/.Xauthority merge $XAUTHORITY 2>/dev/null
+xa=/root/.Xauthority
+
+#Chroot and wait...
+sudo env HOME=/root XAUTHORITY=$xa debian_chroot=reconstructor/root chroot root \
+    /bin/bash -c 'cd ; exec $0 -l'
+
+echo "Cleaning up..."
+#Remove local/sbin redirects
+sudo chroot root sh -c 'rm -f /usr/local/sbin/*'
+#Clear package cache
+sudo chroot root apt-get clean
+#Clear the package update list to remove any knowledge of updates
+sudo chroot root mkdir /root/_empty
+sudo chroot root apt-get update -o 'Dir::Etc::sourcelist'=/dev/null -o 'Dir::Etc::sourceparts'=/root/_empty >/dev/null
+sudo chroot root rmdir /root/_empty
+#Remove any mysql data directory that got created
+sudo chroot root rm -rf /var/lib/mysql/
+#Remove the manager directory - it shouldn't be there but is sometimes created
+#with badly executed chroot/sudo commands.
+sudo chroot root rm -fr /home/manager
+#Clean out anything in /var/crash
+sudo chroot root sh -c 'rm -fr /var/crash/* /var/crash/.*' 2&> /dev/null
+#Clean out /root apart from .bashrc and .profile (needed to set PATH and umask for sudo -i)
+sudo chroot root find /root -maxdepth 1 -mindepth 1 \( -not -name '.bashrc' -and -not -name '.profile' \) -exec rm -r '{}' ';'
+#Clean out /tmp
+sudo chroot root find /tmp \( -type f -or -type l \) -exec rm '{}' ';'
+sudo chroot root find /tmp -maxdepth 1 -mindepth 1 -exec rmdir '{}' ';'
+#Clean out /var/mail even though it should be empty in any case
+sudo chroot root sh -c 'rm -rf /var/mail/*' 2&>/dev/null
+#Zero some log files
+sudo chroot root sh -c 'tee /var/log/bootstrap.log /var/log/aptitude /var/log/dpkg.log </dev/null'
+
+#Remind user to maybe run autoremove
+echo "If you removed packages, did you remember to run apt-get autoremove too?"
+
+#Cleaning up resolv.conf and /proc...
+sudo rm -f "$WORKING"/root/etc/resolv.conf
+sudo mv "$WORKING"/root/etc/resolv.conf~ "$WORKING"/root/etc/resolv.conf
+sudo umount "$WORKING"/root/dev/pts
+sudo umount "$WORKING"/root/proc/ "$WORKING"/root/sys/ 
+
+echo "Done"

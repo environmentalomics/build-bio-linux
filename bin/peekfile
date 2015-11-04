@@ -1,0 +1,114 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+# This is possibly handy.  Peek at a file from an ISO in the archive.
+# Optionally diff the file.
+# Optionally work from the initrd, not the root fs.
+
+our $VERSION = '1';
+sub HELP_MESSAGE
+{ print {$_[0]} "
+Script to quickly extract contents of files from old ISO image.
+
+Usage:
+    peekfile <name> ...
+    peekfile -r <version> <name> ...
+    peekfile -d <name>
+    peekfile -i <name_in_initrd>
+";
+}
+
+use Getopt::Std;
+$Getopt::Std::STANDARD_HELP_VERSION = 1;
+
+my $diffmode = 0;
+my $initrdmode = 0;
+my $latest_rev = '0.0.0';
+my $latest_revfile = '';
+my $rev_wanted = undef;
+
+# Must have arguments:
+@ARGV = ("--help") unless @ARGV;
+
+#while getopts "r:div" optname
+my %opts;
+getopts('r:div', \%opts);
+
+$diffmode = 1 if $opts{d};
+$initrdmode = 1 if $opts{i};
+$rev_wanted = $opts{r};
+
+# Find latest revision:
+my @revs_found = <~/bio-linux-*.iso /mnt/archive/bio-linux-*.iso>;
+for my $revfile (@revs_found)
+{
+    my ($rev) = $revfile =~ /.*bio-linux-(.*).iso/;
+
+    my @rsplit = split(/\./, $rev);
+    my @lrsplit = split(/\./, $latest_rev);
+
+    if($rev_wanted)
+    {
+	if($rev eq $rev_wanted)
+	{
+	    $latest_rev = $rev;
+            $latest_revfile = $revfile;
+	    last;
+        }
+    }
+    else
+    {
+	if( $rsplit[0] > $lrsplit[0] ||
+	    $rsplit[0] == $lrsplit[0] && $rsplit[1] > $lrsplit[1] ||
+	    $rsplit[0] == $lrsplit[0] && $rsplit[1] == $lrsplit[1] && $rsplit[2] > $rsplit[2] )
+	{
+	    $latest_rev = $rev;
+	    $latest_revfile = $revfile;
+	}
+    }
+}	
+
+$latest_rev or die $rev_wanted ?
+    "Revision $rev_wanted not found in home or archives.\n" :
+    "No ISO files found in  home or archives.\n";
+
+print STDERR "Working on $latest_revfile.\n" if $opts{v};
+
+if(!-d "/mnt/iso" || !-d "/mnt/loop")
+{
+    die "You need to mkdir -p /mnt/iso && mkdir -p /mnt/loop.\n";
+}
+
+#Munge all input
+map { s/^\/// ; s/^/'"'"'/; s/$/'"'"'/ } @ARGV;
+
+#OK, now actually do this thing:
+my $cmd;
+if( !$diffmode && !$initrdmode )
+{   
+    $cmd = "sudo bash -c 'mount -o loop $latest_revfile /mnt/iso && mount -o loop /mnt/iso/casper/filesystem.squashfs /mnt/loop && ";
+    for( @ARGV ){ $cmd .= "{ if [ -d /mnt/loop/$_ ] ; then ls -F /mnt/loop/$_ ; else cat /mnt/loop/$_ ; fi } ; " };
+    $cmd .= "umount /mnt/loop /mnt/iso'";
+}
+elsif( $diffmode && !$initrdmode )
+{
+    $cmd = "sudo bash -c 'mount -o loop $latest_revfile /mnt/iso && mount -o loop /mnt/iso/casper/filesystem.squashfs /mnt/loop && ";
+    for( @ARGV ){ $cmd .= "diff /mnt/loop/$_ ~/reconstructor/root/$_ ; " };
+    $cmd .= "umount /mnt/loop /mnt/iso'";
+}
+elsif( !$diffmode && $initrdmode )
+{
+    $cmd = "sudo bash -c 'mount -o loop $latest_revfile /mnt/iso && ";
+    for( @ARGV ){ $cmd .= "zcat /mnt/iso/casper/initrd.gz | cpio -i --quiet --to-stdout $_ ; " };
+    $cmd .= "umount /mnt/iso'";
+}
+elsif( $diffmode && $initrdmode )
+{
+    $cmd = "sudo bash -c 'mount -o loop $latest_revfile /mnt/iso && ";
+    for( @ARGV ){ $cmd .= "zcat /mnt/iso/casper/initrd.gz | cpio -i --quiet --to-stdout $_ | diff - ~/reconstructor/initrd/$_ ; " };
+    $cmd .= "umount /mnt/iso'";
+}
+
+print STDERR "$cmd\n" if $opts{v};
+
+exec $cmd;

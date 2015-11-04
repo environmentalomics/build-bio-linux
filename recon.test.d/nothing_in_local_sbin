@@ -1,0 +1,12 @@
+#!/bin/sh
+# Test that /usr/local/sbin is empty
+
+if [ -z "${ROOT:-}" ] ; then
+    echo '!'" \$ROOT is not set.  Can't continue"
+    exit 1
+fi
+
+echo
+echo "Testing that /usr/local/sbin has no redirects left by openchroot"
+
+[ "`ls $ROOT/root/usr/local/sbin 2>/dev/null | wc -l`" = 0 ]

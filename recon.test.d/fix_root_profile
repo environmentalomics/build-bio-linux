@@ -1,0 +1,39 @@
+#!/bin/sh
+set -u
+set -e
+
+# Check that $ROOT/root/root/.bashrc sets a colour prompt
+# and that it is red and that umask is set in .profile.
+
+if [ -z "${NOMSG:-}" ] ; then
+  echo
+  echo "Verifying root prompt and root umask."
+fi
+
+if [ -z "${ROOT:-}" ] ; then
+    echo '!'" \$ROOT is not set.  Can't continue"
+    exit 1
+fi
+
+# This script needs to re-run as root
+if [ "`id -u`" != 0 ] ; then
+    echo ". using sudo"
+    exec sudo env ROOT="$ROOT" NOMSG=1 "$0" "$@"
+fi
+
+cd "${ROOT}/root/root"
+
+#Check files exist
+[ -e .profile -a -e .bashrc ]
+
+if ! grep -q '^force_color_prompt=yes' .bashrc ; then
+    sed -i 's/^#\(force_color_prompt=yes\)/\1/' .bashrc
+    sed -i 's/01;32m/01;31m/' .bashrc
+    echo "~ Fixed .bashrc"
+fi
+
+if ! grep -q '^umask' .profile ; then
+    sed -i '2s/\(.*\)/\1\n#Ensure standard umask\numask 022\n/' .profile
+    echo "~ Fixed .profile"
+fi
+

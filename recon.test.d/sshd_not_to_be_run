@@ -1,0 +1,24 @@
+#!/bin/sh
+
+# sshd really shouldn't run on live boot, plus it upsets Packer when it can
+# connect to port 22 but then gets access denied
+# the block will need to be removed by biolinuxfirstboot
+
+if [ -z "${ROOT:-}" ] ; then
+    echo '!'" \$ROOT is not set.  Can't continue"
+    exit 1
+fi
+
+echo
+echo "Ensuring /etc/ssh/sshd_not_to_be_run is in place"
+
+if [ ! -e "$ROOT"/root/etc/ssh/sshd_not_to_be_run ] ; then
+    echo "~ Adding file"
+    sudo tee "$ROOT"/root/etc/ssh/sshd_not_to_be_run <<.
+# Added for Bio-Linux 8.
+# SSHD should not normally run on a live USB/DVD session.
+# If you really want it, just remove this file and start the SSH service.
+# This file should be removed on the first boot after installation, so if
+# you find it on your installed system then something went wrong.
+.
+fi

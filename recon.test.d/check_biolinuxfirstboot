@@ -1,0 +1,18 @@
+#!/bin/sh
+# Check that the firstboot script is active and up-to-date
+set -e
+set -u
+
+echo
+echo "Checking biolinuxfirstboot"
+
+if [ -z "${ROOT:-}" ] ; then
+    echo '!'" \$ROOT is not set.  Can't continue"
+    exit 1
+fi
+
+#VERSION should be exported by recon
+BLVERS="`echo "$VERSION" | cut -d. -f1`"
+[ -z "$BLVERS" ] && BLVERS=8
+
+diff -qs ~/bl${BLVERS}bits/biolinuxfirstboot "$ROOT"/root/etc/rc1.d/S99biolinuxfirstboot

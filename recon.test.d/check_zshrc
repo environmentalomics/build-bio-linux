@@ -1,0 +1,22 @@
+#!/bin/sh
+set -e
+set -u
+
+if [ -z "${ROOT:-}" ] ; then
+    echo '!'" \$ROOT is not set.  Can't continue"
+    exit 1
+fi
+
+# /etc/zsh/zshrc should be provided by bio-linux-zsh and the .ubuntu
+# version should be provided by zsh-common, diverted there by b-l-zsh.
+# For some reason, this went wrong before, so be a bit paranoid and check.
+echo
+echo "Checking zshrc files are present and correct"
+
+rc="$ROOT"/root/etc/zsh/zshrc
+
+[ -e "$rc" ]
+[ -e "$rc".ubuntu ]
+# And they are not the same file, right??
+! diff -q "$rc" "$rc".ubuntu
+

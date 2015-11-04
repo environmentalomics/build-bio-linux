@@ -1,0 +1,13 @@
+#!/bin/sh
+# Test that nothing got installed in /boot/grub
+
+if [ -z "${ROOT:-}" ] ; then
+    echo '!'" \$ROOT is not set.  Can't continue"
+    exit 1
+fi
+
+echo
+echo "Testing that /boot/grub contains just 1 file"
+
+count="`ls $ROOT/root/boot/grub/* 2>/dev/null | wc -l`"
+[ $count = 1 ]

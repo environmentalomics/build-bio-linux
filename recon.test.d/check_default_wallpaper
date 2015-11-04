@@ -1,0 +1,25 @@
+#!/bin/sh
+set -e
+set -u
+
+if [ -z "${ROOT:-}" ] ; then
+    echo '!'" \$ROOT is not set.  Can't continue"
+    exit 1
+fi
+
+# Ensure that the ubuntu-final-warty.png file is there.
+# In order to remove it I need to make bio-linux-themes-v8
+# provide ubuntu-wallpapers.  Do this later.
+
+echo
+echo "Checking /usr/share/backgrounds/ubuntu-final-warty.png"
+
+dir="$ROOT"/root/usr/share/backgrounds
+
+[ -e "$dir"/warty-final-ubuntu.png ] && exit 0
+
+echo "~ Linking it to the grasshopper image"
+( cd "$dir" && \
+  sudo ln -s Grasshopper_by_Marcin_Jankowski_BL_Logo.jpg warty-final-ubuntu.png )
+
+

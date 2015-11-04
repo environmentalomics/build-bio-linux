@@ -1,0 +1,18 @@
+#!/bin/bash
+
+# List packages on the image
+
+root=/home/manager/reconstructor/root
+mode=$1 
+
+case "$mode" in
+    deb)
+	ls $root/var/lib/dpkg/info/*.list | sed 's/.*info\/\(.*\)\.list$/\1/'
+    ;;
+    r)
+	ls -d $root/usr/local/lib/R/site-library/*/R $root/usr/lib/R/site-library/*/R \
+	    | sed 's/.*site-library\/\(.*\)\/R/\1/' | sort
+    ;;
+    *)
+	echo "Mode must be r or deb"
+esac

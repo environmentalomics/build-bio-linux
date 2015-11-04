@@ -1,0 +1,32 @@
+#!/bin/sh
+# Test old kernels were purged
+
+if [ -z "${ROOT:-}" ] ; then
+    echo '!'" \$ROOT is not set.  Can't continue"
+    exit 1
+fi
+
+echo
+echo "Testing that /boot contains just 3 to 6 kernel files"
+
+cd $ROOT/root/boot/
+# We expect to find a single abi- config- System.map-
+echo ". counting abi-* config-* System.map-*"
+count1="`ls abi-* config-* System.map-* | wc -l`"
+[ $count1 = 3 ]
+
+# There might be a kernel, in which case we expect vmlinuz-*-generic and
+# vmlinuz-*-generic.efi.signed
+echo ". counting vmlinuz-*-generic vmlinuz-*-generic.efi.signed"
+count2="`ls vmlinuz-*-generic vmlinuz-*-generic.efi.signed 2>/dev/null | wc -l`"
+[ $count2 = 2 -o $count2 = 0 ]
+
+# There might be an initrd.img-
+# Also, it's an error if we see a kernel but no initrd
+echo ". counting initrd.img-*"
+count3="`ls initrd.img-* 2>/dev/null | wc -l`"
+if [ $count2 = 2 ] ; then
+    [ $count3 = 1 ]
+else
+    [ $count3 = 1 -o $count3 = 0 ]
+fi

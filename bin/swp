@@ -1,0 +1,102 @@
+#!/bin/bash
+
+# Swap two files around.  How often to I need to do this?
+
+usage() {
+    echo "Usage: swp [-s|-p] [-v] <file1> <file2>"
+    exit 1
+}
+
+# -s = silly mode (slow)
+# -p = preserve ownership (also slow)
+MODE=normal
+VERBOSE=n
+
+# Standard arg processing
+while getopts sp flag ; do
+    case $flag in
+            s)
+                MODE=silly
+                ;;
+            p)
+                MODE=preserve
+                ;;
+            v)
+                VERBOSE=y
+		;;
+            ?)
+                usage
+                ;;
+        esac
+   done
+shift $(( OPTIND - 1 ))
+
+[ "$#" = 2 ] || usage
+
+#In either case both files must exist and be readable
+if ! [ -r "$1" -a -r "$2" ] ; then
+    echo "Both files must exist and be readable"
+    exit 2
+fi
+
+# And they need to be the same type, and s and p modes only work on files
+type1="`stat -c '%F' "$1"`"
+type2="`stat -c '%F' "$2"`"
+if [ "$type2" != "$type1" ] ; then
+    echo "Files must be of the same type"
+    exit 2
+fi
+
+if [ ! -f "$1" -a "$MODE" != normal ] ; then
+    echo "Only regular files can be swapped in $MODE mode."
+    exit 2
+fi
+
+# Swappy time...
+if [ "$MODE" = normal -a -f "$1" ] ; then
+    # Move file1 to a tmp name in same dir
+    # Move file2 to file1
+    # Move tmpname to file2
+    tmpf="`mktemp "$1".XXXXXX`"
+    [ -z "$tmpf" ]     && { echo "mktemp failed" ; exit 3 ; }
+    mv -f "$1" "$tmpf" || { echo "mv failed" ; exit 3 ; }
+    mv -f "$2" "$1"    || { echo "mv failed" ; mv "$tmpf" "$1" ; exit 3 ; }
+    mv -f "$tmpf" "$2" || { echo "mv failed; file 1 now in $tmpf" ; exit 3 ; }
+elif [ "$MODE" = normal ] ; then
+    # Swap two dirs, or links, or whatever.  Almost identical
+    tmpf="`mktemp -u "$1".XXXXXX`"
+    [ -z "$tmpf" ]  && { echo "mktemp failed" ; exit 3 ; }
+    mv "$1" "$tmpf" || { echo "mv failed" ; exit 3 ; }
+    mv "$2" "$1"    || { echo "mv failed; file 1 now in $tmpf" ; exit 3 ; }
+    mv "$tmpf" "$2" || { echo "mv failed; file 1 now in $tmpf" ; exit 3 ; }
+elif [ "$MODE" = preserve ] ; then
+    # Preserve file modes and owners by switching contents
+    # Make a temp file
+    # cat file 2 into it
+    # cat file 1 into file 2
+    # cat tmp into file 1
+    # First we need to check both are writeable
+    if ! [ -w "$1" -a -w "$2" ] ; then
+        echo "Both files must exist and be writeable"
+        exit 2
+    fi
+    tmpf="`mktemp "$1".XXXXXX`"
+    [ -z "$tmpf" ]  && { echo "mktemp failed" ; exit 3 ; }
+    cat "$2" > "$tmpf"
+    cat "$1" > "$2"
+    cat "$tmpf" > "$1"
+    rm "$tmpf"
+elif [ "$MODE" = silly ] ; then
+    #Silly mode.  Does not preserve file modes but does avoid
+    #any need for tmp files.
+    ( fn1="`readlink /dev/fd/4`" && 
+      fn2="`readlink /dev/fd/5`" && 
+      rm -f "$fn1" "$fn2" && 
+      cat /dev/fd/5 > "$fn1" && 
+      cat /dev/fd/4 > "$fn2" 
+    ) 4<$1 5<$2
+fi
+
+if [ "$VERBOSE" = y ] ; then
+    echo "Swapped $1 <=> $2 in $MODE mode."
+fi

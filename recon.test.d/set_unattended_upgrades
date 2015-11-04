@@ -1,0 +1,40 @@
+#!/bin/sh
+
+if [ -z "${ROOT:-}" ] ; then
+    echo '!'" \$ROOT is not set.  Can't continue"
+    exit 1
+fi
+
+# TODO - Bio-Linux also should receive automated security updates by
+# default.  But it's more than just a matter of package selection so
+# I'm putting this in recon.test.d.
+
+echo
+echo "Checking that unattended-upgrades are set up, as advertised"
+
+if ! ls "$ROOT"/root/var/lib/dpkg/info | grep -qFx unattended-upgrades.list ; then
+    echo '!'" Nope - do this # apt-get -y install cron anacron unattended-upgrades"
+    exit 1
+fi
+
+if ! [ -e "$ROOT"/root/etc/apt/apt.conf.d/55unattended-upgrades-override ] ; then
+    echo "~ Adding the configuration for unattended-upgrades"
+    sudo tee "$ROOT"/root/etc/apt/apt.conf.d/55unattended-upgrades-override <<.
+// Activate partial unattended upgrade on Bio-Linux systems.
+APT::Periodic {
+    Update-Package-Lists "1";
+    Download-Upgradeable-Packages "1";
+    AutocleanInterval "7";
+    Unattended-Upgrade "1";
+};
+
+// All security patches and normal updates
+Unattended-Upgrade::Allowed-Origins {
+    "\${distro_id}:\${distro_codename}-security";
+    "\${distro_id}:\${distro_codename}-updates";
+  "bio-linux:standard"; // For old-style BL packages.
+};
+.
+fi
+
+#echo "Auto-updates set up."

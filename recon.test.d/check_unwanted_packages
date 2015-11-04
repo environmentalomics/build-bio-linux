@@ -1,0 +1,14 @@
+#!/bin/sh
+
+if [ -z "${ROOT:-}" ] ; then
+    echo '!'" \$ROOT is not set.  Can't continue"
+    exit 1
+fi
+
+# A lot of stuff is removed by the cruft-killer, but for the ISO a few other
+# things can be purged.
+echo
+echo "Checking some unwanted packages were removed"
+
+! ls -ld "$ROOT"/root/usr/share/doc/example-content
+! ls -ld "$ROOT"/root/usr/share/doc/aisleriot

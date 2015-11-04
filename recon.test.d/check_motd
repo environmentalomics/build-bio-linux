@@ -1,0 +1,14 @@
+#!/bin/sh
+# Test that MOTD is going to say "Bio-Linux" and not "Ubuntu".
+# This should be applied by the bio-linux-themes-v8 package, much like
+# the modification to /etc/grub.d
+
+if [ -z "${ROOT:-}" ] ; then
+    echo '!'" \$ROOT is not set.  Can't continue"
+    exit 1
+fi
+
+echo
+echo "Inspecting /etc/update-motd.d/00-header - should be fixed by themes-v8 pkg"
+
+grep -q 'Bio-Linux' $ROOT/root/etc/update-motd.d/00-header

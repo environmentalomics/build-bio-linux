@@ -1,0 +1,36 @@
+#!/bin/sh
+set -u
+set -e
+
+# Check that ssh disallows root logins and only allows in
+# members of the SSH group
+echo
+echo "Verifying ssh settings..."
+
+if [ -z "${ROOT:-}" ] ; then
+    echo '!'" \$ROOT is not set.  Can't continue"
+    exit 1
+fi
+
+filetocheck="$ROOT"/root/etc/ssh/sshd_config
+
+if [ ! -e "$filetocheck" ] ; then
+    echo '!'" Target file $filetocheck not found.  Can't continue."
+    exit 1
+fi
+
+if grep -q "^PermitRootLogin no" "$filetocheck"; then
+    echo ". Root logins denied: good."
+else
+    echo "~ Denying root login."
+    sudo sed -i 's/^PermitRootLogin .*/PermitRootLogin no/' "$filetocheck"
+fi
+
+if grep -q "^AllowGroups " "$filetocheck"; then
+    echo ". Logins limited to ssh group members: good."
+else
+    #This time I need to add a line as there is no line to modify
+    echo "~ Limiting logins to ssh group members."
+    sudo sed -i 's/^\(PermitRootLogin .*\)/\1\nAllowGroups ssh/' "$filetocheck"
+fi
+

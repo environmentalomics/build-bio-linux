@@ -1,0 +1,54 @@
+#!/bin/sh
+set -u
+set -e
+
+# Check that $ROOT/remaster/.disk/info mentions Bio-Linux and also
+# has no EOL
+if [ -z "${ROOT:-}" ] ; then
+    echo '!'" \$ROOT is not set.  Can't continue"
+    false
+fi
+filetofix="$ROOT"/remaster/.disk/info
+
+echo
+echo "Checking .disk/info starts with Bio-Linux <VERSION>"
+
+if [ ! -e "$filetofix" ] ; then
+    echo '!'" $filetofix not found.  Can't continue."
+    false
+fi
+
+#VERSION should be exported by recon
+BLVERS="`echo "$VERSION" | cut -d. -f1`"
+[ -z "$BLVERS" ] && BLVERS=8
+
+# Hyphens are being stripped in the installer GUI, but I have
+# a trick to work around that - non-breaking hyphen = unicode 2011
+BL="`perl -C -e 'print qq-Bio\N{U+2011}Linux-'`"
+
+if grep -q '^Bio-Linux ' "$filetofix" ; then
+    echo "~ Swapping regular hyphen for non-breaking hyphen"
+    sed -i "s/^Bio-Linux/$BL/" "$filetofix"
+fi
+
+if ! grep -q '^Bio.Linux ' "$filetofix" ; then
+    echo "~ It doesn't - fixing it"
+    sed -i "s/^/$BL $BLVERS based on /" "$filetofix"
+fi
+
+echo
+echo "Verifying no newline on .disk/info..."
+
+if [ `cat "$filetofix" | wc -l` = 0 ] ; then
+    echo ". File has no newline terminator - good."
+    exit 0
+fi
+
+if [ `cat "$filetofix" | wc -l` != 1 ] ; then
+    echo '!'" File has multiple lines - eh???"
+    exit 1
+fi
+
+# See if we can fix it without error
+echo "~ File has a newline on the end - removing it."
+perl -pi -e 's/\n//' "$filetofix"

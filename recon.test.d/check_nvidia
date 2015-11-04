@@ -1,0 +1,12 @@
+#!/bin/sh
+
+if [ -z "${ROOT:-}" ] ; then
+    echo '!'" \$ROOT is not set.  Can't continue"
+    exit 1
+fi
+
+# We shouldn't be shipping any NVidia binary gubbins.
+echo
+echo "Checking no NVidia packages got on the image"
+
+! ls "$ROOT"/root/var/lib/dpkg/info | grep nvidia-

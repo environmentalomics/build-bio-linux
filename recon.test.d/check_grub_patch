@@ -1,0 +1,13 @@
+#!/bin/sh
+# Test that Grub is going to say "Bio-Linux" and not "Ubuntu".
+# This should be applied by the bio-linux-themes-v8 package
+
+if [ -z "${ROOT:-}" ] ; then
+    echo '!'" \$ROOT is not set.  Can't continue"
+    exit 1
+fi
+
+echo
+echo "Inspecting /etc/grub.d/10_linux - should be fixed by themes-v8 pkg"
+
+grep -q 'Bio-Linux' $ROOT/root/etc/grub.d/10_linux

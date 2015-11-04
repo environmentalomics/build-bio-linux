@@ -1,0 +1,70 @@
+#!/bin/bash
+
+# This wants to be a bit like recon, except it takes the ISO and runs it through
+# Packer.  Ideally the output should be a .ovf file that works on VirtualBox
+# and VMWare.  Let us see.
+
+# Actually, I made it so that you can use this to call recon.  Logic is that if you
+# want to repack and test a stick call recon, but if you want to repack and test the
+# install run repack.
+
+# 1) Work out what ISO to pack.
+
+ISOBASE="bio-linux"
+makeit=0
+
+#This must match whatever Packer is using
+builddir=$HOME/Public/packer/output-virtualbox-iso/
+
+if [ -n "$1" ] ; then
+    VERSION=$1
+    ISO="$ISOBASE-$VERSION.iso"
+    makeit=1
+else
+    ISO="`( cd ; ls -dt $ISOBASE-*.iso | head -n 1 )`"
+    VERSION=`echo "$ISO" | sed "s,$ISOBASE"'-\(.\+\)\.iso,\1,'`
+fi
+
+# I always forget this, so make it automatic...
+if ! modinfo vboxdrv >/dev/null 2>&1 ; then
+    sudo /etc/init.d/vboxdrv setup
+fi
+
+if [ ! -e ~/"$ISO" ] ; then
+    echo "No ISO found"
+    if [ "$makeit" = 1 ] ; then
+	env BURNISO=n ~/bin/recon "$1"
+	if [ ! -e ~/"$ISO" ] ; then
+	    echo "No ISO found"
+	    exit 1
+	fi
+    else
+	exit 1
+    fi
+fi
+echo "Repacking ISO ~/$ISO"
+
+#Remove old stuff
+( cd "$builddir" && rm -f * )
+
+if ! ~/packer/create_box ~/"$ISO" ; then
+    echo "Failed.  Boo."
+    exit 1
+fi
+
+echo "Modifying OVF and packing OVA file"
+# Now it seems somehow easier to always build the box as "packer-virtualbox-iso"
+# so I need to directly modify the OVF to say "Bio-Linux-xxx"
+DISPLAYNAME="Bio-Linux-$VERSION"
+( cd "$builddir" && foo=`echo *.ovf` && \
+    sed 's,packer-virtualbox-iso[-0-9]*\(["<]\),'"$DISPLAYNAME"'\1,' "$foo" > "$DISPLAYNAME".ovf && \
+    rm "$foo" )
+
+# And pack the result into an OVA
+OVA=`echo "$ISO" | sed 's/\.[^.]\+$//'`.ova
+( cd "$builddir" && tar -cf ~/"$OVA" *.ovf *.vmdk )
+
+echo "Calculating checksums"
+( cd ; md5sum "$ISO" "$OVA" | tee -a md5sums.txt )
+
+echo DONE
