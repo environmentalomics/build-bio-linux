@@ -1,0 +1,174 @@
+#!/usr/bin/perl
+
+# This script will report package updates.  I've borrowed from the code in update_packages
+# but I'm not entirely happy with that code so this is a re-write.  No action will be taken,
+# but the script will suggest updates to run.
+
+# Basic process:
+# Find all packages in Packages.gz
+# For all directories called bio-linux-*
+#   Get the version+pkgname form DEBIAN/control
+#   Look for a .deb file in ~/packages
+#	Report if version mismatches
+#   Look for the record in Packages.gz
+#       Report if version mismatches
+#   Look for any files newer than the .deb file
+#	Report if found
+# done
+
+use warnings;
+use strict;
+use IO::Handle;
+use File::stat;
+use Data::Dumper;
+
+my $arg = $ARGV[0] || '*';
+
+# First off, do not run this as root.  Really.
+if($< == 0){ die "You should have no need to run this script as root.\n" }
+
+my $packages_gz = "/var/www/bio-linux/dists/unstable/bio-linux/binary-amd64/Packages.gz";
+my $packages_dir = "$ENV{HOME}/packages";
+
+# Set autoflush on STDOUT+STDERR
+STDERR->autoflush(1);
+STDOUT->autoflush(1);
+
+print "> Finding all packages mentioned in Packages.gz... ";
+my @files_in_pgz = map { /.*\/(.*)/ }
+	`zcat /var/www/bio-linux/dists/unstable/bio-linux/binary-amd64/Packages.gz | grep "^Filename: "`;
+
+print "found " . @files_in_pgz . "\n";
+
+print "> Finding all packages in ~/packages... ";
+
+my @packages_in_dir;
+while(<$packages_dir/bio-linux-$arg>)
+{
+    my $dir = $_;
+    if ( -d $dir ) {
+
+	my %pkginfo = map { /(\w+):\s?(.*)/ }
+	    `grep '^[^ \\t].\\+:' '$dir/DEBIAN/control'`;
+
+	$pkginfo{Package} or die "Could not get package name from \"$dir/DEBIAN/control\"";
+	$pkginfo{Architecture} or die "Could not get package arch from \"$dir/DEBIAN/control\"";
+	$pkginfo{Version} or die "Could not get package version from \"$dir/DEBIAN/control\"";
+
+	# Don't care about i386 stuff just now
+	next if $pkginfo{Architecture} eq 'i386';
+
+	$pkginfo{_dir} = $dir;
+	push @packages_in_dir, \%pkginfo;
+    }
+}
+
+print "found " . @packages_in_dir . "\n";
+
+print "Examining packages...\n";
+
+my @stuff_to_rebuild;
+
+for( @packages_in_dir )
+{
+    my %pkginfo = %{$_};
+    my ($filename, $version_found);
+
+    my $debfilename = "$pkginfo{Package}_$pkginfo{Version}_$pkginfo{Architecture}.deb";
+
+    my $pkgblurb = "$pkginfo{Package}_$pkginfo{Version}"; 
+    for( $pkginfo{_dir} =~ /.*(?:\/|^)(.*)/ )
+    {
+	/^$pkginfo{Package}$/ or $pkgblurb .= " IN $_";
+    }
+    # FIXME - sort out special characters??
+    
+    if( ! -f "$packages_dir/$debfilename" )
+    {
+	# Is there a version at all?
+	# Note this use of a regex match within a map pulls out the first
+	# matching list member - useful to know.
+	($filename, $version_found) = map { /.*\/(.*?_(.*?)_.*)/ } 
+		glob( "$packages_dir/$pkginfo{Package}_*_$pkginfo{Architecture}.deb" );
+
+	if( $version_found )
+	{
+	    # See if the verion in control is actually newer
+	    if(pkgcmp($pkginfo{Version}, $version_found) < 0)
+	    {
+		print "$pkgblurb needs rebuilding (older $filename)\n";
+		push @stuff_to_rebuild, $pkginfo{Package};
+	    }
+	    else
+	    {
+		print "$pkgblurb lower version than .deb!! (newer $filename)\n";
+	    }
+	}
+	else
+	{	
+	    print "$pkgblurb needs building (found no .deb)\n";
+	    push @stuff_to_rebuild, $pkginfo{Package};
+	}
+    }
+    else
+    {
+	my $pkg_found_in_pgz = scalar( grep { $_ eq $debfilename } @files_in_pgz );
+
+	if( ! $pkg_found_in_pgz )
+	{
+	    print "$pkgblurb is built but not in Packages.gz\n";
+	    push @stuff_to_rebuild, $pkginfo{Package};
+	}
+
+	# Finally, look for any newer files (this is probably not the most logical order to scan)
+	my (@newer) = `find '$pkginfo{_dir}' -cnewer '$packages_dir/$debfilename' -prune -print`;
+	if( @newer )
+	{
+	    # Look for a newer file, not just a directory.
+	    my (@fnewer) = `find '$pkginfo{_dir}' -cnewer '$packages_dir/$debfilename' -type f -print`;
+
+	    if( @fnewer )
+	    {
+		print "$pkgblurb has been modified (" . @fnewer ." files)  but the version has not been changed.\n";
+
+		#Print the list if only one package is being scanned
+		print map { "  $_" } @fnewer if $ARGV[0]; 
+	    }
+	    else
+	    {
+		# Just running Vim to look at a file will make a directory
+		# look older as it saves a cache buffer, so normally just ignore this.
+		if( $ARGV[0] )
+		{
+		    print "$pkgblurb has been modified, but only directory mtime" .
+			  " - could be deletions or just Vim activity.\n";
+
+		    print map { "  $_" } @newer;
+		}
+	    }
+	}
+    }
+}
+
+print "> Examination complete.";
+if(@stuff_to_rebuild)
+{   
+    print "  These packages seem to need rebuilding:\n";
+    print " @stuff_to_rebuild\n";
+}
+else
+{
+    print "\n";
+}
+
+
+exit 0;
+
+# Here's a package verion comparator suitable for use in
+# sort { pkgcmp($a,$b) } @pkg_versions;
+sub pkgcmp
+{
+    !system('dpkg', '--compare-versions', $_[0], 'eq', $_[1]) ? 0 :
+    (system('dpkg', '--compare-versions', $_[0], 'gt', $_[1]) ? 1 : -1) ;
+}
+

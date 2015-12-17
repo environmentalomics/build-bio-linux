@@ -1,0 +1,871 @@
+#!/usr/bin/perl
+# ----------------------------------------------------------------------
+#
+# This script sits in /etc/cron.daily and is used to build the Bio-Linux
+# deb packages in /home/manager/packages.  They are then copied to the 
+# website and the Packages.gz file is created for each repository.
+#
+# Written by Stewart Houten (shou@ceh.ac.uk) 2005-06-28
+#
+# (Based on Dan Swan's script that now lives in /home/manager/packages/scripts)
+#
+# Usage: update_repository [<package_name> | -all | -mirror [newpackage ...]]
+#
+#        Forced build of all packages:
+#           $ update_repository -all
+#
+#        Only build modified packages:
+#           $ update_repository 
+# 
+#        Build a specific package:
+#           $ update_repository <package_name>
+#
+#        Refresh all packages in /mirror_.*
+#           $ update_repository -mirror
+#
+#        ( Note <package_name> can be the full or short name
+#          eg. bio-linux-artemis or artemis )
+# ----------------------------------------------------------------------
+# Changes...
+# 2008-02-20 SH
+# Moved the package list output to /var/www/static for the new website.
+#
+# 2008-11-12 SH
+# Added code to output a listing of all packages in the repository
+# displaying name, version and description from the Debian control file.
+#
+# 2005-08-25 SH
+# Added a line to remove blank spaces from Version number
+# line.  These will cause the "dpkg -b" to break with too many
+# arguments supplied.
+
+
+use warnings;
+use strict;
+use File::Copy;
+use File::stat;
+use Data::Dumper;
+
+# First off, do not run this as root.  Really.
+if($< == 0){ die "No, do not run this script as root.  Things will break.  Really!\n" }
+
+# Setting DEBUG on doesn't build, delete, copy or move any packages
+# (This might make more sense being named SIMULATE but it functioned
+# as debug when writing this)
+
+our $DEBUG = 0; # Off 
+#our $DEBUG = 1; # On
+
+# Global variable definitions
+my $root_app = "/usr/bin/fakeroot";
+my $package_dir = "/home/$ENV{USER}/packages"; # Packages home directory
+
+my $duplicate_package_flag = 0;
+
+#There is only a single apt-ftparchive configuration for all architectures.
+my $apt_ftparchive_conf = "$package_dir/apt-pkg-repository.conf";
+
+my $apt_ftparchive_db = "--db $package_dir/apt-ftparchive.db";  #Cache file, can be safely removed
+my @mirror_names = qw(karmic lucid oneiric precise sid ppa);
+
+my $uns_base = "/var/www/bio-linux";
+
+##########################################################################################
+# Added paths for all architectures
+my $uns_debs_i386 = "/var/www/bio-linux/dists/unstable/bio-linux/binary-i386";
+my $uns_debs_all = "/var/www/bio-linux/dists/unstable/bio-linux/all";
+my $uns_debs_amd64 = "/var/www/bio-linux/dists/unstable/bio-linux/binary-amd64";
+
+my $curr_dir;
+my $arch;
+
+##########################################################################################
+
+my $com_debs = "/var/www/bio-linux-commercial/dists/commercial/bio-linux/binary-i386/";
+
+my $com_base = "/var/www/bio-linux-commercial/";
+
+my $build_package; # Short name (or alias) of the package to be built
+my $no_args = scalar(@ARGV); # Number of command line arguments 
+my $packagename; # Full name of package to be built including version number
+my $version; # Package version number
+
+my $architecture; # ADDED - Architecture to be built
+my $package_name; #  Added - return name of package being built
+
+my @package_list; # Array of packages to be built
+my $output_list_txt = 0;
+
+# Flags indicating which Packages.gz file(s) are to be recreated
+my $uns_flag = "0"; 
+my $com_flag = "0"; # don't do anything in the commercial directory
+
+# Clean up *~ files in the packages folders
+#printf("Cleaning up tilde files in the package folders... ");
+#system("find /home/manager/packages -iname '*~' -print0 | xargs -0 rm > /dev/null 2>&1");
+#printf("Done\n");
+
+# Work in package directory
+chdir($package_dir); 
+
+if ( ( $no_args == 1 ) && ( $ARGV[0] !~ /^-/ ) ) {
+
+    #
+    # Build ONLY the package on the command line
+    #
+
+    $build_package = "$ARGV[0]";
+
+    # Append "bio-linux-" to the package name if it's missing
+    ( $build_package =~ s/^/bio-linux-/ ) if ( ! ( $build_package =~ /^bio-linux-/ ) );
+
+    # Check that the package directory exists and quit if it doesn't
+    find_package($build_package);
+
+    @package_list = ($build_package);
+
+	$output_list_txt = 1;
+
+} elsif ( ( $no_args == 0 ) or ( ( $no_args == 1 ) && ( $ARGV[0] eq "-all" ) ) ) { 
+
+    #
+    # Build all packages OR those that need rebuilding
+    #
+
+    # Print some useful messages
+    if ( $no_args == 0 ) { print "\n> Only building packages that have been updated\n"; }
+    else				 { print "\n> Building ALL packages\n"; }
+
+    print "\n> Reading packages list... \t\t\t";
+
+    # Get the list of packages that are to be built
+    if ( $no_args == 0 ) {
+		@package_list = get_updated_package_list();
+
+    } else {
+		@package_list = get_package_list();
+    }
+
+	print "[DONE]\n";
+	
+	$output_list_txt = 1;
+
+}
+
+# Now we worked out what to build, work through the package list 
+if(@package_list)
+{
+    foreach $build_package (@package_list) {
+
+	# Get the version number from DEBIAN/control
+	# FIXME - dpkg-deb does it for you!!
+	$version = get_version($build_package, $version);
+	
+	$architecture = get_architecture($build_package, $architecture);		
+	$package_name = get_package_name($build_package, $package_name);
+	# Build the package
+	$packagename = build_it($package_dir, $build_package, $version);
+	
+	# Set the location to check for the package, dependant on the architecture
+	my $package_location;
+
+	if ( $architecture eq 'all')
+	{
+		$package_location = $uns_debs_all;
+	}
+	elsif ( $architecture eq 'i386')
+	{
+		$package_location = $uns_debs_i386;
+	}
+	elsif ( $architecture eq 'amd64')
+	{
+		$package_location = $uns_debs_amd64;
+	}
+
+	# check whether the package exists on the server already
+	if ( -e "$package_location/$packagename" && $duplicate_package_flag == 0)
+	{
+	    print "Warning: Package already exists on server, deleting cache file $package_dir/apt-ftparchive.db\n";
+	    $duplicate_package_flag = 1;			
+	}
+
+	# Copy the deb packages onto the web server
+	copy_to_server($build_package, $packagename);
+
+	# Set flag for unstable or commercial
+	if ( $build_package =~ /genespring/ ) { $com_flag = "1"; } else { $uns_flag = "1"; }
+    }
+
+    # if there is a duplicate package on the server delete the cache file before creating the Packages.gz file
+    if ( $duplicate_package_flag == 1)
+    {
+	unlink "$package_dir/apt-ftparchive.db";
+    }
+
+    # Recreate the Packages.gz file in the appropriate directory
+    mk_packages_gz($uns_flag, $com_flag);
+
+} elsif ( ($ARGV[0]||'') eq "-mirror" ) {
+
+	#This does make sense - honest!
+	shift;
+	my %package_to_mirror;
+	for(@ARGV) { 
+		/(?:(.*)\/)?(.*)/;
+		for($1 || @mirror_names)
+		{
+			$package_to_mirror{$_} ||= [];
+			push @{$package_to_mirror{$_}}, $2;
+		}
+	}
+
+	#Crufty coding ahoy as we deal with 3 mirrors...
+	for(@mirror_names) # Could get this list by peeking at the dirs.
+	{
+		next if( %package_to_mirror && ! $package_to_mirror{$_} );
+
+		# Find out all the packages being mirrored, or use the one supplied
+		my @mirrored_packages = $package_to_mirror{$_} ? @{$package_to_mirror{$_}} : list_mirrored_packages($_);
+		print "> Downloading new packages in mirror_$_\n";
+
+		#Grab new versions
+		for my $pkgname (@mirrored_packages)
+		{
+			grab_mirrored_package($_, $pkgname);
+		}
+
+		clean_mirror($_);
+	}
+
+    # Recreate the Packages.gz file in the appropriate directory
+    mk_packages_gz(1, 0);
+
+} elsif(!$output_list_txt) {
+
+    # Incorrect usage
+    usage(); 
+
+} 
+
+if($output_list_txt)
+{
+    # Generate the package listing for the website with 
+    # Package Name (not bio-linux-) -- Version -- Description
+    output_package_list();
+}
+
+exit 0;
+
+
+
+# ----------------------------------------------------------------------
+
+
+sub output_package_list {
+    chdir($package_dir);
+    # Feb20,2009 SH - moved the package list to static on the new website
+    my $outfile="/var/www/static/bio-linux-package-list-old.txt";
+    my ($package, $version, $desc, $arch);
+    my %info = ();
+    my $nn;
+
+    print "> Creating package listing for NEBC website...\n";
+
+    #get package list
+    while (<bio-linux-*/DEBIAN/control>) {
+		my $ctlfile = $_;
+		open (IN, "$ctlfile") or die "Failed to open the control file $ctlfile.\n";
+		while (<IN>) {
+			/^Package:\ (.*)/ and $package = $1;
+			/^Version:\ (.*)/ and $version = $1;
+			/^Description:\ (.*)/ and $desc = $1;
+			/^Architecture:\ (.*)/ and $arch = $1;
+		}
+		$package =~ s/^bio-linux-//; # or warn "Package name not found or doesn't begin with bio-linux- in $ctlfile\n";
+
+		#A hack - KMenus is declared as arch all but won't actually work on BL6
+		$arch = 'i386' if $package eq 'emboss-kmenus';
+
+		$info{$package}{$arch} = "$version";
+		$info{$package}{_desc} = "$desc" unless ($info{$package}{_desc} && $arch eq 'i386');
+
+		#print("$package\t$version\t$desc\n");
+		close(IN);
+    }
+
+    # output to a text file in /var/www
+    open(OUT, ">$outfile") or die "Failed to open the outfile\n";
+		foreach $package (sort keys %info) {
+			if($info{$package}{all})
+			{
+				print(OUT "$package\t$info{$package}{all}\t$info{$package}{_desc}\n");
+			}
+			elsif($info{$package}{amd64})
+			{
+				print(OUT "$package\t", ($info{$package}{amd64}||''), "\t", $info{$package}{_desc}, "\n");
+			}
+		}
+    close(OUT);
+}
+
+sub copy_to_server {
+
+    #
+    # Once the packages have been built within the manager/packages directory
+    # they need to be copied into the web server (actually on the same machine
+    # but just in a directory that's accessible via web.
+    #
+    # So remove the old packages on the web server and copy the new ones across
+    #
+
+    my $build_package = shift;
+    my $packagename = shift;
+
+##################################################
+# Added
+    my $uns_debs = "/var/www/bio-linux/dists/unstable/bio-linux";
+##################################################
+
+    if ($architecture eq 'all')
+    {
+		$uns_debs = $uns_debs_all;
+    }
+    elsif ($architecture eq 'i386') {
+		$uns_debs = $uns_debs_i386;
+    }
+    elsif ($architecture eq 'amd64') {
+		$uns_debs = $uns_debs_amd64;
+    }
+
+    # Remove old deb files from unstable tree on server
+    while (<$uns_debs/${build_package}_*.deb>) {
+		chomp;
+		# Remove the old deb package from unstable tree
+		print "> Removing old package from web server... \t";
+		$DEBUG || ( unlink $_ or die "Error: Failed to unlink file $_: $!\n" );
+		print "[DONE]\n";
+    }
+
+#    # Remove old deb files from commercial tree on server
+#    while (<$com_debs/*.deb>) {
+#	chomp;
+#	# Note this test now fails because the file name begins with the path part of the glob
+#	if ( index($_, "${build_package}_") == 0 ) {
+#	    # Remove the old deb package from commercial tree
+#	    print "> Removing old package from web server... \t";
+#	    $DEBUG || ( unlink $_ or die "Error: Failed to unlink file $_: $!\n" );
+#	    print "[DONE]\n";
+#	}
+#    }
+
+    # Copy the new deb packages on to the web server
+    if ( "$packagename" =~ /genespring/ ) {
+	# Copy GENESPRING package to commercial
+	print "> Copying new package to $com_debs on web server... \t\t";
+	$DEBUG || ( copy($packagename, "$com_debs/$packagename") or die "Error: failed to copy file $packagename:$!\n" );
+	print "[DONE]\n";
+    } else {
+
+############ PACKAGENAME NOT SET FOR COPYING 
+
+	# Copy anything that isn't GENESPRING to unstable
+	print "> Copying $packagename to $uns_debs on web server... \t\t";
+# 	print "\n $packagename\n";
+	$DEBUG || ( copy($packagename, "$uns_debs/$packagename") or die "Error: failed to copy file $packagename:$!\n" );
+	print "[DONE]\n";
+		
+    }
+    
+}
+
+sub get_package_list {
+
+    #
+    # Get the list of all packages for building
+    #
+
+    my @package_list=();
+
+    while(<bio-linux-*>) {
+	
+	# Make sure we're just building from the directories
+	if ( -d "$_" ) {
+	    push( @package_list, "$_");
+	} 
+    }
+
+    return @package_list;
+
+}
+
+sub get_updated_package_list {
+
+    #
+    # Get a list of packages that have been modified and need to be built
+    # (or that haven't yet been built)
+    # This is a little cludgy but it works fairly efficiently
+    #
+    my $arch = shift;	
+    my @package_list=();
+    my $mostrecent;
+    my $deb_stat = "0";
+    my $dir_stat = "0";
+
+    for my $dir (<bio-linux-*>) {
+
+ 	if ( -d "$dir" ) {
+	    my $deb = "";
+
+	    my ($pkgname) = (`grep "^Package: " "$dir/DEBIAN/control"` =~ /(\S+)\n/);
+	    my ($architecture) = (`grep "^Architecture: " "$dir/DEBIAN/control"` =~ /(\S+)\n/);
+	    # print "DEBUG: Architecture is $architecture\n";
+	    $pkgname or die "Could not get package name from \"$dir/DEBIAN/control\"";
+
+	    while(<$pkgname\_*_$architecture.deb>) { $deb = $_; }
+
+	    if ( -f "$deb"  ) { 
+
+		$deb_stat = stat($deb)->mtime;
+
+		open(FIND, "find $dir |");
+
+		LINE: while(<FIND>) {
+		    chomp;
+		    if ( -e $_ ) { # if it's not a broken symlink
+			if ( stat($_)->mtime > $deb_stat ) {
+			    # print "DEBUG: adding $dir to list because of $_\n";
+			    push(@package_list, $dir);
+			    last LINE;
+			}
+		    } 
+		}
+
+		close(FIND);
+
+	    } else { 
+		#print "DEBUG: adding $dir to list because of there is no package for $pkgname\n";
+		push(@package_list, $dir);
+	    }
+
+ 	} 
+    }
+
+    # Check that there are some packages to build
+    if ( ! @package_list ) {
+		print "\n    Package archive is up-to-date - ";
+    }
+
+    return @package_list;
+} 
+
+
+sub build_it {
+
+    # 
+    # Remove the old deb package and build the new one using 
+    # system call to "dpkg -b" 
+    #
+
+    my $package_dir = shift;
+    my $build_package = shift;
+    my $version = shift;
+
+    # Remove the old .deb package - Not sure why we can't just build the new one
+    # and haven't tested this.  Dan did this so do the same until we know better
+    while (<$package_dir/*.deb>) {
+	chomp;
+	if ( /${build_package}\_.*\.deb/ ) {
+	    print "> Removing old package... \t\t\t";
+	    $DEBUG || ( unlink "$_" or die "Error: Failed to unlink file $_: $!\n" );
+	    print "[DONE]\n";
+	}
+    }
+
+    # Define the full name of the new package
+    $packagename = $version ? $package_name."_".$version."_".$architecture.".deb" : $package_dir;
+    print "> Rebuilding package... \t\t\t";
+    
+    # Build the new package
+    $DEBUG || `$root_app dpkg -b $build_package $packagename`;
+
+    print "[DONE]\n";
+    
+   return $packagename;
+}
+
+sub get_version {
+
+    #
+    # Get the package build version number from bio-linux-*/DEBIAN/control
+    # and define the full name of the package to be built
+    #
+
+    my $build_package = shift;
+    my $version = shift;
+
+    open (TMP, "$build_package/DEBIAN/control") or die "Error: Cannot find DEBIAN/control\n";
+
+    while (<TMP>) {
+	if ( /^Version/ ) {
+	    ($version) = $_ =~ /Version:\ (.*)/;
+	    $version =~ s/ //g;
+	} 
+    }
+
+    close (TMP);
+
+    # Print some useful output
+    print "> Package to be built:\n\n";
+    print "  Package:\t$build_package\n";
+    print "  Version:\t$version\n";
+
+    return $version;
+}
+
+#Added 
+sub get_architecture {
+	
+	# ADDED - built on get_version, uses bio-linux-*/DEBIAN/control to define
+	# the architecture that package is to be compiled for
+	#
+	
+	my $build_package = shift;
+	my $architecture = shift;
+
+	open (TMP, "$build_package/DEBIAN/control") or die "Error: Cannot find DEBIAN/control\n";
+	
+	while (<TMP>) {
+		if ( /^Architecture/ ) {
+			($architecture) = $_ =~ /Architecture:\ (.*)/;
+			$architecture =~ s/ //g;
+		}
+	}
+	close(TMP);
+	print "  Architecture:\t$architecture\n\n";
+	
+	return $architecture;
+}
+	
+sub get_package_name {
+       # ADDED - Returns the name of the package from the DEBIAN/control file
+
+        my $build_package = shift;
+        my $package_name = shift;
+
+        open (TMP, "$build_package/DEBIAN/control") or die "Error: Cannot find DEBIAN/control\n";
+
+        while (<TMP>) {
+                if ( /^Package/ ) {
+                        ($package_name) = $_ =~ /Package:\ (.*)/;
+                        $package_name =~ s/ //g;
+                }
+        }
+        close(TMP);
+
+        return $package_name;
+}
+	
+
+sub find_package {
+
+    #
+    # Check that the package specified on the command line exists or exit
+    #
+
+    my $build_package = shift;
+
+    # Check that the package directory exists
+    if ( ! -d $build_package ) {
+	print "Error: Cannot find package directory $build_package\n";
+	exit 0;
+    } 
+
+}
+
+sub mk_packages_gz {
+
+    #
+    # (Re)create the Packages.gz file for the package tree(s) that have new packages.
+    # Use system call to "dpkg-scanpackages"
+    # and put the file in the approprate place alongside the deb packages
+    #
+    
+    my $uns_flag = shift;
+    my $com_flag = shift;
+    
+    #Added path for each of the three architectures 
+	#  my $uns_debs_i386 = "/var/www/bio-linux/dists/unstable/bio-linux/binary-i386"; 
+	#  my $uns_debs_all = "/var/www/bio-linux/dists/unstable/bio-linux/all";
+	#  my $uns_debs_amd64 = "/var/www/bio-linux/dists/unstable/bio-linux/binary-amd64";
+	my $uns_debs;
+
+    my $release_location = "/var/www/bio-linux/dists/unstable";
+
+    #Variable to hold information about architecture
+    my $arch;
+
+
+    # Make the Packages.gz file for the unstable tree
+    print "> Creating Packages.gz for unstable... \t\t\n"; 
+
+    # Creates a Packages_new file for each of the three architectures    
+    if ( $uns_flag ) {
+		for( ['binary-i386' => $uns_debs_i386], ['binary-amd64' => $uns_debs_amd64], ['all' => $uns_debs_all] )
+		{
+			($arch, $uns_debs) = @$_;
+		
+			chdir( "$uns_base" );
+			$DEBUG or `apt-ftparchive $apt_ftparchive_db packages dists/unstable/bio-linux/$arch > $uns_debs/Packages_new` ; 
+		}
+
+		#Creates a Packages.gz that combines i386 and also generates a Release file
+		# Release file stored in the architecture specific directory e.g.
+		# /var/www/bio-linux/dists/unstable/bio-linux/i386
+		system("cat $uns_debs_i386/Packages_new  $uns_debs_all/Packages_new | tee $uns_debs_i386/Packages_new1  | gzip -9c >$uns_debs_i386/Packages.gz_new1");
+		system("cat $uns_debs_amd64/Packages_new $uns_debs_all/Packages_new | tee $uns_debs_amd64/Packages_new1 | gzip -9c >$uns_debs_amd64/Packages.gz_new1");
+
+		# Note, reason for not writing directly to the new packages file is so visitors never see a work in progress.
+		for("$uns_debs_i386/Packages", "$uns_debs_i386/Packages.gz", "$uns_debs_amd64/Packages", "$uns_debs_amd64/Packages.gz")
+		{
+			rename "${_}_new1", "$_";
+		}
+			
+		# Remove the Packages_new from all directories
+		unlink "$uns_debs_i386/Packages_new";
+		unlink "$uns_debs_amd64/Packages_new";
+		unlink "$uns_debs_all/Packages_new";
+
+		# Remove previous Release files
+		unlink "$release_location/Release";
+		unlink "$release_location/Release.gpg";	
+
+		# Create the Release file and sign it
+		$DEBUG or `apt-ftparchive -c $apt_ftparchive_conf release $release_location > $release_location/Release`;
+
+		# Note this uses the key specified in ~/.gnupg/gpg.conf
+		$DEBUG or `gpg -abs -o $release_location/Release.gpg $release_location/Release`;
+		print "[DONE]\n";
+    }
+
+    # Make the Packages.gz file for the commercial tree
+    if ( $com_flag ) {
+		print "> Creating Packages.gz for commercial... \t"; 
+		chdir( "$com_base" );
+
+		# Create the Packages.gz file withing the packages directory
+		#$DEBUG or `dpkg-scanpackages . /dev/null 2>/dev/null | gzip -9c > /tmp/Packages.gz`;
+		$DEBUG or `apt-ftparchive $apt_ftparchive_db packages dists | tee $com_debs/Packages | gzip -9c > $com_debs/Packages.gz`;
+
+		$DEBUG or `apt-ftparchive release $com_debs > $com_debs/Release`;
+
+		# Remove the old Release file and gpg
+		$DEBUG or ( unlink "$com_base/dists/commercial/Release" );
+		$DEBUG or ( unlink "$com_base/dists/commercial/Release.gpg" );
+
+		# Create the high lever Release file and sign it
+		$DEBUG or `apt-ftparchive -c $apt_ftparchive_conf release $com_base/dists/commercial > $com_base/dists/commercial/Release`;
+
+		chdir( "$com_base/dists/commercial" );
+		$DEBUG or `gpg -abs -o Release.gpg Release`;
+
+
+		#$DEBUG or `dpkg-scanpackages . /dev/null 2>/dev/null | gzip -9c > /tmp/Packages.gz`;
+		#$DEBUG or move("/tmp/Packages.gz", $com_debs);
+		print "[DONE]\n";
+    }
+}
+
+sub list_mirrored_packages
+{
+	my $mirror = shift;
+	print "> Looking for packages in mirror $mirror... \t";
+
+	#Reasonably easy.
+	
+	my @mirror_dirs = ("$uns_debs_i386/mirror_$mirror", "$uns_debs_amd64/mirror_$mirror","$uns_debs_all/mirror_$mirror");
+	my %packagenames;
+
+	for my $mirror_dir (@mirror_dirs)
+	{
+	    for(<$mirror_dir/*.deb>)
+	    {
+		    /.*\/(.*?)_/ ; $packagenames{$1}++;
+	    }
+	}
+	
+	print "[found " . keys(%packagenames) . "]\n";
+
+	sort keys %packagenames;
+}
+
+sub grab_mirrored_package
+{
+	# First look for the i386 package.  If this comes back as an 'all' package put it in the 'all' directory
+	# Else put it in the i386 directory
+	# If package is i386 or if it fails, try for the amd64 version
+
+	my $mirror = shift;
+	my $pkgname = shift;
+
+	#Need to (ab)use the packages.ubuntu.com server...
+	my ($infopage, $urlmatch, $urlmatch2);
+	if($mirror eq 'sid' || $mirror eq 'unstable' || $mirror eq 'testing')
+	{
+		$infopage = "http://packages.debian.org/$mirror/i386/$pkgname/download";
+		#Find the link to the German mirror (a bit arbitrary, but there's no uk one).
+		$urlmatch = qr{href=\"(http://ftp\.de\.debian\.org[^"]+)};
+		$urlmatch2 = qr{href=\"(http://security\.debian\.org\/debian-security[^"]+)};
+	}elsif($mirror ne 'ppa'){
+		$infopage = "http://packages.ubuntu.com/$mirror/i386/$pkgname/download";
+		$urlmatch = qr{href=\"(http://de\.archive\.ubuntu\.com[^"]+)};
+		$urlmatch2 = qr{href=\"(http://security\.ubuntu\.com[^"]+)};
+	}else
+	{
+		#For PPA grab from Packages.gz.  Should have done that for the others really.
+		$infopage = "http://ppa.launchpad.net/tbooth/ppa1/ubuntu/dists/lucid/main/binary-amd64/Packages.bz2";
+		$urlmatch = qr(^Filename: (pool/main/\w{1,4}/[^/]+/${pkgname}_[^_]+_(?:amd64|all)\.deb));
+		$urlmatch2 = qr(^:);
+	}
+	my $deb_url;
+	my $infopipe;
+
+	if($infopage =~ /i386/)
+	{
+	    open $infopipe, '-|', 'wget', '-qO-', $infopage || die "Failed to run wget - aborting";
+
+	    #Find the link to the German mirror (a bit arbitrary, but there's no uk one).
+	    #If I decide to add more patterns I should use an array.
+	    for(<$infopipe>)
+	    {
+		    m{$urlmatch} and $deb_url = $1, last;
+		    m{$urlmatch2} and $deb_url = $1, last;
+	    }
+	    close $infopipe;
+	
+	    if(! $deb_url)
+	    {	
+		    print "Could not extract URL to download 32-bit package from package website query\n";	
+		    # Will try for 64-bit version anyway
+	    }
+	    else
+	    {
+		    #Find the filename (assume I'll not need to de-quote the URL)
+		    my ($deb_file) = ($deb_url =~ m{.*/(.*\.deb)}) or die "URL for deb package looks weird! - $deb_url";
+		    my ($deb_type) = ($deb_file =~ m{_(\w+)\.deb$}) or die "Cannot deternine archtecture of deb - $deb_file";
+
+		    my $mirror_dir = $deb_type eq 'i386' ? "$uns_debs_i386/mirror_$mirror" : "$uns_debs_all/mirror_$mirror" ;
+
+		    #See if we have that one already.
+		    if(-e "$mirror_dir/$deb_file")
+		    {
+			    print "  Package $pkgname already at latest version.\n";
+		    }
+		    else
+		    {
+			    # 	print "  Fetching $deb_file.\n";
+			    system qq{mkdir -p $mirror_dir};
+			    system qq{wget -nv -P $mirror_dir "$deb_url"};
+		    }
+
+		    $deb_type eq 'i386' or return 1;
+	    } 
+
+	    # Now the same for 64-bit
+	    $infopage =~ s{/i386/}{/amd64/};
+	}
+
+	if($infopage =~ /\.bz2$/)
+	{
+	    open $infopipe, "wget -qO- '$infopage' | bzcat |" || die "Failed to run wget - aborting";
+	}
+	else
+	{
+	    open $infopipe, '-|', 'wget', '-qO-', $infopage || die "Failed to run wget - aborting";
+	}
+
+	#Find the link to the German mirror (a bit arbitrary, but there's no uk one).
+	$deb_url = 0;
+	for(<$infopipe>)
+	{
+		m{$urlmatch} and $deb_url = $1, last;
+		m{$urlmatch2} and $deb_url = $1, last;
+
+		m{^Filename} and print $_;
+	}
+	close $infopipe;
+
+	$deb_url or die "Could not extract URL to download 64-bit package from package website query\n";
+	if($deb_url =~ /^pool\//)
+	{
+	    $deb_url = "http://ppa.launchpad.net/tbooth/ppa1/ubuntu/$deb_url";
+	}
+
+	#Find the filename (assume I'll not need to de-quote the URL)
+	my ($deb_file) = ($deb_url =~ m{.*/(.*\.deb)}) or die "URL for deb package looks weird! - $deb_url";
+	my ($deb_type) = ($deb_file =~ m{_(\w+)\.deb$}) or die "Cannot deternine archtecture of deb - $deb_file";
+
+	$deb_type eq 'amd64' || $deb_type eq 'all' or die "Unexpected architecture type $deb_type in $deb_file - expected amd64.\n";
+	my $mirror_dir = $deb_type eq 'amd64' ? "$uns_debs_amd64/mirror_$mirror" : "$uns_debs_all/mirror_$mirror" ;
+
+	#See if we have that one already.
+	if(-e "$mirror_dir/$deb_file")
+	{
+		print "  Package $pkgname already at latest version.\n";
+	}
+	else
+	{
+		# 	print "  Fetching $deb_file.\n";
+		system qq{mkdir -p $mirror_dir};
+		system qq{wget -nv -P $mirror_dir "$deb_url"};
+	}
+
+}
+
+sub clean_mirror
+{
+	my $mirror = shift;
+
+	#For now, just tell the user what to do:
+	print "> Scanning mirror directory for old packages.\n";
+	print "> (( Removals will not actually be done! ))\n";
+
+	my $mirror_dir = "$uns_debs_i386/mirror_$mirror";
+	my %pkg_hash;
+
+	#For each package, get a list of versions
+	for(<$mirror_dir/*.deb>)
+	{
+		/.*\/(.*?)_(.*?)_/ ; 
+		$pkg_hash{$1} ||= [];
+		push @{$pkg_hash{$1}}, $2;
+	}
+		
+	#Now for each package...
+	for my $apackage (keys %pkg_hash)
+	{
+		#dpkg has a very specific way of comparing version strings, so this is the
+		#correct way to do a Perl sort on them
+		my @versions = sort { !system('dpkg', '--compare-versions', $a, 'eq', $b) ? 0 :
+							  (system('dpkg', '--compare-versions', $a, 'gt', $b) ? -1 : 1) 
+						    } @{$pkg_hash{$apackage}};
+
+		pop @versions; #Remove latest version
+		next if(!@versions);
+
+		for(@versions)
+		{
+			print "  # rm ", glob("$mirror_dir/${apackage}_${_}_*.deb"), "\n";
+		}
+	}
+	print "> DONE\n";
+}
+
+sub usage {
+
+    #
+    # Print information on usage of update_repository and exit
+    #
+
+    print "Usage: update_repository [<package_name> | -all | -mirror [newpackage ...]]\n";
+    exit 0;
+}
