@@ -239,8 +239,8 @@ done > $pfile
 
 # If this was run on a Vanilla Ubuntu 14.04 box then Universe/Multiverse sources
 # will not be active.  Tell the user about it.
-if grep -q '^deb .*/ [a-z ]\+ universe$'   /etc/apt/sources.list && \
-   grep -q '^deb .*/ [a-z ]\+ multiverse$' /etc/apt/sources.list ; then
+if grep -qw universe   /etc/apt/sources.list && \
+   grep -qw multiverse /etc/apt/sources.list ; then
     true
 else
     echo "**** Warning:"
