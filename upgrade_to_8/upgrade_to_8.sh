@@ -208,13 +208,17 @@ deb http://nebc.nerc.ac.uk/bio-linux/ unstable bio-linux
 cat >/etc/apt/sources.list.d/google-chrome.list <<"."
 ### THIS FILE IS AUTOMATICALLY CONFIGURED ###
 # You may comment out this entry, but any other modifications may be lost.
-deb http://dl.google.com/linux/chrome/deb/ stable main
+deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main
 .
+
 cat >/etc/apt/sources.list.d/google-talkplugin.list <<"."
 ### THIS FILE IS AUTOMATICALLY CONFIGURED ###
 # You may comment out this entry, but any other modifications may be lost.
-deb http://dl.google.com/linux/talkplugin/deb/ stable main
+deb [arch=amd64] http://dl.google.com/linux/talkplugin/deb/ stable main
 .
+
+# add Google's Linux signing pub key to apt
+wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
 
 # 7
 #cat >/etc/apt/sources.list.d/mate-desktop.list <<"."
